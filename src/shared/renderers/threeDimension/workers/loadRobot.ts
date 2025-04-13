@@ -21,42 +21,37 @@ self.onmessage = (event) => {
   const materialSpecular = new THREE.Color().fromArray(payload.materialSpecular);
   const materialShininess: number = payload.materialShininess;
 
-  let meshes: THREE.MeshJSON[][] = [];
-
   const gltfLoader = new GLTFLoader();
   Promise.all([
-    new Promise((resolve) => {
-      gltfLoader.load(robotConfig.path, resolve);
-    }),
-    ...robotConfig.components.map(
-      (_, index) =>
-        new Promise((resolve) => {
-          gltfLoader.load(robotConfig.path.slice(0, -4) + "_" + index.toString() + ".glb", resolve);
-        })
-    )
-  ]).then(async (gltfs) => {
-    let gltfScenes = (gltfs as GLTF[]).map((gltf) => gltf.scene);
-    for (let index = 0; index < gltfScenes.length; index++) {
-      let scene = gltfScenes[index];
-      if (index === 0) {
-        scene.rotation.setFromQuaternion(getQuaternionFromRotSeq(robotConfig!.rotations));
-        scene.position.set(...robotConfig!.position);
-      }
+    loadRobotComponent(robotConfig.path, true), // Load the base of the robot model.
+    ...robotConfig.components.map((_, index) => { // Load all of the robot component models.
+      return loadRobotComponent(robotConfig.path.slice(0, -4) + "_" + index.toString() + ".glb");
+    })
+  ]).then((meshes) => {
+    resolve(meshes, prepareTransfer(meshes));
+  });
 
-      let optimized = await optimizeGeometries(
-        scene,
-        mode,
-        materialSpecular,
-        materialShininess,
-        !robotConfig.disableSimplification
-      );
-      let sceneMeshes: THREE.Mesh[] = [];
-      if (optimized.normal.length > 0) sceneMeshes.push(optimized.normal[0]);
-      if (optimized.transparent.length > 0) sceneMeshes.push(optimized.transparent[0]);
-      meshes.push(sceneMeshes.map((mesh) => mesh.toJSON()));
+  async function loadRobotComponent(path: string, applyTransformations?: boolean): Promise<THREE.MeshJSON[]> {
+    const model = await gltfLoader.loadAsync(path);
+    const scene = model.scene;
+    
+    if (applyTransformations) {
+      scene.rotation.setFromQuaternion(getQuaternionFromRotSeq(robotConfig!.rotations));
+      scene.position.set(...robotConfig!.position);
     }
 
-    let transfer = prepareTransfer(meshes);
-    resolve(meshes, transfer);
-  });
+    let optimized = await optimizeGeometries(
+      scene,
+      mode,
+      materialSpecular,
+      materialShininess,
+      !robotConfig.disableSimplification
+    );
+
+    let sceneMeshes: THREE.Mesh[] = [];
+    if (optimized.normal.length > 0) sceneMeshes.push(optimized.normal[0]);
+    if (optimized.transparent.length > 0) sceneMeshes.push(optimized.transparent[0]);
+
+    return sceneMeshes.map((mesh) => mesh.toJSON());
+  }
 };
