@@ -136,7 +136,9 @@ export default class RobotManager extends ObjectManager<
     return this.lastModel;
   }
 
-  setObjectData(object: ThreeDimensionRendererCommand_RobotObj | ThreeDimensionRendererCommand_GhostObj): void {
+  async setObjectData(
+    object: ThreeDimensionRendererCommand_RobotObj | ThreeDimensionRendererCommand_GhostObj
+  ): Promise<void> {
     let assets = this.assetsOverride ?? window.assets;
     let robotConfig = assets?.robots.find((robotData) => robotData.name === object.model);
 
@@ -263,69 +265,70 @@ export default class RobotManager extends ObjectManager<
           });
         } else {
           // Desktop, load models with worker and mesh merging
-          WorkerManager.request("../bundles/shared$loadRobot.js", {
+          const result: THREE.MeshJSON[][] = await WorkerManager.request("../bundles/shared$loadRobot.js", {
             robotConfig: robotConfig!,
             mode: this.mode,
             materialSpecular: this.materialSpecular.toArray(),
             materialShininess: this.materialShininess
-          }).then((result: THREE.MeshJSON[][]) => {
-            if (loadingCounter !== this.loadingCounter) {
-              // Model was switched, throw away the data :(
-              return;
-            }
+          });
 
-            const loader = new THREE.ObjectLoader();
-            this.meshes = [];
-            this.dimensions = [0, 0, 0, 0];
+          if (loadingCounter !== this.loadingCounter) {
+            // Model was switched, throw away the data :(
+            return;
+          }
 
-            result.forEach((sceneMeshJSONs, index) => {
-              // Load meshes
-              let sceneMeshes: THREE.Mesh[] = sceneMeshJSONs.map((json) => loader.parse(json) as THREE.Mesh);
-              sceneMeshes.forEach((mesh) => {
-                if (index === 0) {
-                  mesh.geometry.computeBoundingBox();
-                  let box = mesh.geometry.boundingBox;
-                  if (box !== null) {
-                    this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
-                    this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
-                    this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
-                    this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
-                  }
-                }
+          const loader = new THREE.ObjectLoader();
+          this.meshes = [];
+          this.dimensions = [0, 0, 0, 0];
 
-                if (object.type === "ghost") {
-                  if (!Array.isArray(mesh.material)) {
-                    mesh.material.dispose();
-                  }
-                  mesh.material = this.ghostMaterial;
-                }
-              });
-
-              // Add swerve mesh
+          for (let index = 0; index < result.length; index++) {
+            const sceneMeshJSONs = result[index];
+            // Load meshes
+            const sceneMeshes: THREE.Mesh[] = sceneMeshJSONs.map((json) => loader.parse(json) as THREE.Mesh);
+            for (const mesh of sceneMeshes) {
               if (index === 0) {
-                let swerveMesh = new THREE.Mesh(
-                  new THREE.PlaneGeometry(this.SWERVE_CANVAS_METERS, this.SWERVE_CANVAS_METERS).translate(0, 0, 0.1),
-                  new THREE.MeshPhongMaterial({
-                    map: this.swerveTexture,
-                    transparent: true,
-                    side: THREE.DoubleSide
-                  })
-                );
-                swerveMesh.renderOrder = 999;
-                swerveMesh.material.depthTest = false;
-                swerveMesh.material.transparent = true;
-                sceneMeshes.push(swerveMesh);
+                mesh.geometry.computeBoundingBox();
+                let box = mesh.geometry.boundingBox;
+                if (box !== null) {
+                  this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
+                  this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
+                  this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
+                  this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
+                }
               }
 
-              let castShadow = new Array(sceneMeshes.length).fill(true);
-              castShadow[castShadow.length - 1] = false;
-              this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
-            });
+              if (object.type === "ghost") {
+                if (!Array.isArray(mesh.material)) {
+                  mesh.material.dispose();
+                }
+                mesh.material = this.ghostMaterial;
+              }
+            }
 
-            this.requestRender();
-            this.loadingEnd();
-            this.isLoading = false;
-          });
+            // Add swerve mesh
+            if (index === 0) {
+              let swerveMesh = new THREE.Mesh(
+                new THREE.PlaneGeometry(this.SWERVE_CANVAS_METERS, this.SWERVE_CANVAS_METERS).translate(0, 0, 0.1),
+                new THREE.MeshPhongMaterial({
+                  map: this.swerveTexture,
+                  transparent: true,
+                  side: THREE.DoubleSide
+                })
+              );
+              swerveMesh.renderOrder = 999;
+              swerveMesh.material.depthTest = false;
+              swerveMesh.material.transparent = true;
+              sceneMeshes.push(swerveMesh);
+            }
+
+            let castShadow = new Array(sceneMeshes.length).fill(true);
+            castShadow[castShadow.length - 1] = false;
+            this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
+          }
+
+          this.requestRender();
+          this.loadingEnd();
+          this.isLoading = false;
         }
       }
     }
