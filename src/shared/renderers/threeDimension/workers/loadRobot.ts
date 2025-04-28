@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { GLTF, GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Config3dRobot } from "../../../AdvantageScopeAssets";
 import { getQuaternionFromRotSeq } from "../../ThreeDimensionRendererImpl";
 import optimizeGeometries from "../OptimizeGeometries";
@@ -24,7 +24,8 @@ self.onmessage = (event) => {
   const gltfLoader = new GLTFLoader();
   Promise.all([
     loadRobotComponent(robotConfig.path, true), // Load the base of the robot model.
-    ...robotConfig.components.map((_, index) => { // Load all of the robot component models.
+    ...robotConfig.components.map((_, index) => {
+      // Load all of the robot component models.
       return loadRobotComponent(robotConfig.path.slice(0, -4) + "_" + index.toString() + ".glb");
     })
   ]).then((meshes) => {
@@ -34,7 +35,7 @@ self.onmessage = (event) => {
   async function loadRobotComponent(path: string, applyTransformations?: boolean): Promise<THREE.MeshJSON[]> {
     const model = await gltfLoader.loadAsync(path);
     const scene = model.scene;
-    
+
     if (applyTransformations) {
       scene.rotation.setFromQuaternion(getQuaternionFromRotSeq(robotConfig!.rotations));
       scene.position.set(...robotConfig!.position);
