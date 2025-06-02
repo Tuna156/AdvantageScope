@@ -118,11 +118,13 @@ function getGeometries(
   // currently stuck, for some reason the children array is empty maybe?
   while (objects.length > 0) {
     const current = objects.pop();
-    if (current?.children && current.children.length > 0) {
+    if (current == undefined) continue;
+
+    if (current.children && current.children.length > 0) {
       for (const child of current.children) objects.push(child);
     }
 
-    processGeometryObject(object);
+    processGeometryObject(current);
   }
 
   function processGeometryObject(object: THREE.Object3D) {
