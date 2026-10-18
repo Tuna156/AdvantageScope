@@ -137,9 +137,6 @@ export default class RobotManager extends ObjectManager<
   }
 
   setObjectData(object: Field3dRendererCommand_RobotObj | Field3dRendererCommand_GhostObj): void {
-    let assets = this.assetsOverride ?? window.assets;
-    let robotConfig = assets?.robots.find((robotData) => robotData.name === object.model);
-
     // Load new robot model
     if (object.model !== this.lastModel || this.hideRobotModels !== this.lastHideRobotModels || this.hasNewAssets) {
       this.shouldLoadNewModel = true;
@@ -147,189 +144,203 @@ export default class RobotManager extends ObjectManager<
       this.hasNewAssets = false;
       this.lastHideRobotModels = this.hideRobotModels;
     }
+
     if (this.shouldLoadNewModel && !this.isLoading) {
-      this.shouldLoadNewModel = false;
-      this.meshes.forEach((mesh) => {
-        mesh.dispose();
-      });
-      this.meshes = [];
-
-      if (robotConfig !== undefined && !this.hideRobotModels) {
-        this.loadingCounter++;
-        let loadingCounter = this.loadingCounter;
-        this.loadingStart();
-        if (this.isLoading) this.loadingEnd();
-        this.isLoading = true;
-
-        if (this.isXR) {
-          // XR, load models directly
-          const urlTransformer: (path: string) => string = (url) => "/asset?path=" + encodeURIComponent(url);
-          const gltfLoader = new GLTFLoader();
-          Promise.all([
-            new Promise((resolve) => {
-              gltfLoader.load(urlTransformer(robotConfig.path), resolve);
-            }),
-            ...robotConfig.components.map(
-              (_, index) =>
-                new Promise((resolve) => {
-                  gltfLoader.load(
-                    urlTransformer(robotConfig.path.slice(0, -4) + "_" + index.toString() + ".glb"),
-                    resolve
-                  );
-                })
-            )
-          ]).then(async (gltfs) => {
-            if (loadingCounter !== this.loadingCounter) {
-              // Model was switched, throw away the data :(
-              return;
-            }
-
-            this.meshes = [];
-            this.dimensions = [0, 0, 0, 0];
-
-            let gltfScenes = (gltfs as GLTF[]).map((gltf) => gltf.scene);
-            for (let index = 0; index < gltfScenes.length; index++) {
-              let scene = gltfScenes[index];
-              if (index === 0) {
-                scene.rotation.setFromQuaternion(getQuaternionFromRotSeq(robotConfig.rotations));
-                scene.position.set(...robotConfig.position);
-              }
-
-              let sceneMeshes: THREE.Mesh[] = [];
-              scene.traverse((object) => {
-                let mesh = object as THREE.Mesh;
-                if (!mesh.isMesh) return;
-                if (mesh.material instanceof THREE.MeshStandardMaterial) {
-                  mesh.material.metalness = 0;
-                  mesh.material.roughness = 1;
-                }
-
-                // Check if too small
-                let vertices: THREE.Vector3[] = [];
-                let center = new THREE.Vector3();
-                for (let i = 0; i < mesh.geometry.attributes.position.count; i++) {
-                  let vertex = new THREE.Vector3(
-                    mesh.geometry.attributes.position.getX(i),
-                    mesh.geometry.attributes.position.getY(i),
-                    mesh.geometry.attributes.position.getZ(i)
-                  );
-                  vertices.push(vertex);
-                  center.add(vertex);
-                }
-                center.divideScalar(vertices.length);
-                let maxRadius = vertices.reduce((prev, vertex) => {
-                  let dist = vertex.distanceTo(center);
-                  return dist > prev ? dist : prev;
-                }, 0);
-                let enableSimplification = !robotConfig.disableSimplification && !mesh.name.includes("NOSIMPLIFY");
-                if (maxRadius >= XR_MAX_RADIUS * (robotConfig.isFTC ? FTC_MULTIPLIER : 1) || !enableSimplification) {
-                  // Apply world matrix to geometry
-                  let geometry = mesh.geometry.clone();
-                  mesh.updateWorldMatrix(true, false);
-                  geometry.applyMatrix4(mesh.matrixWorld);
-                  mesh.geometry = geometry;
-                  sceneMeshes.push(mesh);
-                }
-              });
-
-              sceneMeshes.forEach((mesh) => {
-                if (index === 0) {
-                  mesh.geometry.computeBoundingBox();
-                  let box = mesh.geometry.boundingBox;
-                  if (box !== null) {
-                    this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
-                    this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
-                    this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
-                    this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
-                  }
-                }
-
-                if (object.type === "ghost") {
-                  if (!Array.isArray(mesh.material)) {
-                    mesh.material.dispose();
-                  }
-                  mesh.material = this.ghostMaterial;
-                }
-              });
-
-              let castShadow = new Array(sceneMeshes.length).fill(true);
-              castShadow[castShadow.length - 1] = false;
-              this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
-            }
-
-            this.requestRender();
-            this.loadingEnd();
-            this.isLoading = false;
-          });
-        } else {
-          // Desktop, load models with worker and mesh merging
-          WorkerManager.request("../bundles/shared$loadRobot.js", {
-            robotConfig: robotConfig!,
-            isFTC: robotConfig.isFTC,
-            mode: this.mode,
-            materialSpecular: this.materialSpecular.toArray(),
-            materialShininess: this.materialShininess
-          }).then((result: THREE.MeshJSON[][]) => {
-            if (loadingCounter !== this.loadingCounter) {
-              // Model was switched, throw away the data :(
-              return;
-            }
-
-            const loader = new THREE.ObjectLoader();
-            this.meshes = [];
-            this.dimensions = [0, 0, 0, 0];
-
-            result.forEach((sceneMeshJSONs, index) => {
-              // Load meshes
-              let sceneMeshes: THREE.Mesh[] = sceneMeshJSONs.map((json) => loader.parse(json) as THREE.Mesh);
-              sceneMeshes.forEach((mesh) => {
-                if (index === 0) {
-                  mesh.geometry.computeBoundingBox();
-                  let box = mesh.geometry.boundingBox;
-                  if (box !== null) {
-                    this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
-                    this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
-                    this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
-                    this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
-                  }
-                }
-
-                if (object.type === "ghost") {
-                  if (!Array.isArray(mesh.material)) {
-                    mesh.material.dispose();
-                  }
-                  mesh.material = this.ghostMaterial;
-                }
-              });
-
-              // Add swerve mesh
-              if (index === 0) {
-                let swerveMesh = new THREE.Mesh(
-                  new THREE.PlaneGeometry(this.SWERVE_CANVAS_METERS, this.SWERVE_CANVAS_METERS).translate(0, 0, 0.1),
-                  new THREE.MeshPhongMaterial({
-                    map: this.swerveTexture,
-                    transparent: true,
-                    side: THREE.DoubleSide
-                  })
-                );
-                swerveMesh.renderOrder = 999;
-                swerveMesh.material.depthTest = false;
-                swerveMesh.material.transparent = true;
-                sceneMeshes.push(swerveMesh);
-              }
-
-              let castShadow = new Array(sceneMeshes.length).fill(true);
-              castShadow[castShadow.length - 1] = false;
-              this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
-            });
-
-            this.requestRender();
-            this.loadingEnd();
-            this.isLoading = false;
-          });
-        }
-      }
+      this.loadNewModel(object);
     }
+
+    this.updateObjectData(object);
+  }
+
+  private async loadNewModel(object: Field3dRendererCommand_RobotObj | Field3dRendererCommand_GhostObj): Promise<void> {
+    let assets = this.assetsOverride ?? window.assets;
+    let robotConfig = assets?.robots.find((robotData) => robotData.name === object.model);
+
+    this.shouldLoadNewModel = false;
+    for (const mesh of this.meshes) mesh.dispose();
+    this.meshes = [];
+
+    if (robotConfig === undefined || this.hideRobotModels) return;
+
+    this.loadingCounter++;
+    let loadingCounter = this.loadingCounter;
+    this.loadingStart();
+    if (this.isLoading) this.loadingEnd();
+    this.isLoading = true;
+
+    if (this.isXR) {
+      // XR, load models directly
+      const urlTransformer: (path: string) => string = (url) => "/asset?path=" + encodeURIComponent(url);
+      const gltfLoader = new GLTFLoader();
+      const gltfs = (await Promise.all([
+        new Promise((resolve) => {
+          gltfLoader.load(urlTransformer(robotConfig.path), resolve);
+        }),
+        ...robotConfig.components.map(
+          (_, index) =>
+            new Promise((resolve) => {
+              gltfLoader.load(urlTransformer(robotConfig.path.slice(0, -4) + "_" + index.toString() + ".glb"), resolve);
+            })
+        )
+      ])) as GLTF[];
+
+      if (loadingCounter !== this.loadingCounter) {
+        // Model was switched, throw away the data :(
+        return;
+      }
+
+      this.meshes = [];
+      this.dimensions = [0, 0, 0, 0];
+
+      let gltfScenes = gltfs.map((gltf) => gltf.scene);
+      for (let index = 0; index < gltfScenes.length; index++) {
+        let scene = gltfScenes[index];
+        if (index === 0) {
+          scene.rotation.setFromQuaternion(getQuaternionFromRotSeq(robotConfig.rotations));
+          scene.position.set(...robotConfig.position);
+        }
+
+        let sceneMeshes: THREE.Mesh[] = [];
+        scene.traverse((object) => {
+          let mesh = object as THREE.Mesh;
+          if (!mesh.isMesh) return;
+          if (mesh.material instanceof THREE.MeshStandardMaterial) {
+            mesh.material.metalness = 0;
+            mesh.material.roughness = 1;
+          }
+
+          // Check if too small
+          let vertices: THREE.Vector3[] = [];
+          let center = new THREE.Vector3();
+          for (let i = 0; i < mesh.geometry.attributes.position.count; i++) {
+            let vertex = new THREE.Vector3(
+              mesh.geometry.attributes.position.getX(i),
+              mesh.geometry.attributes.position.getY(i),
+              mesh.geometry.attributes.position.getZ(i)
+            );
+            vertices.push(vertex);
+            center.add(vertex);
+          }
+          center.divideScalar(vertices.length);
+          let maxRadius = vertices.reduce((prev, vertex) => {
+            let dist = vertex.distanceTo(center);
+            return dist > prev ? dist : prev;
+          }, 0);
+          let enableSimplification = !robotConfig.disableSimplification && !mesh.name.includes("NOSIMPLIFY");
+          if (maxRadius >= XR_MAX_RADIUS * (robotConfig.isFTC ? FTC_MULTIPLIER : 1) || !enableSimplification) {
+            // Apply world matrix to geometry
+            let geometry = mesh.geometry.clone();
+            mesh.updateWorldMatrix(true, false);
+            geometry.applyMatrix4(mesh.matrixWorld);
+            mesh.geometry = geometry;
+            sceneMeshes.push(mesh);
+          }
+        });
+
+        sceneMeshes.forEach((mesh) => {
+          if (index === 0) {
+            mesh.geometry.computeBoundingBox();
+            let box = mesh.geometry.boundingBox;
+            if (box !== null) {
+              this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
+              this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
+              this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
+              this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
+            }
+          }
+
+          if (object.type === "ghost") {
+            if (!Array.isArray(mesh.material)) {
+              mesh.material.dispose();
+            }
+            mesh.material = this.ghostMaterial;
+          }
+        });
+
+        let castShadow = new Array(sceneMeshes.length).fill(true);
+        castShadow[castShadow.length - 1] = false;
+        this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
+      }
+
+      this.requestRender();
+      this.loadingEnd();
+      this.isLoading = false;
+    } else {
+      // Desktop, load models with worker and mesh merging
+      const result: THREE.MeshJSON[][] = await WorkerManager.request("../bundles/shared$loadRobot.js", {
+        robotConfig: robotConfig!,
+        isFTC: robotConfig.isFTC,
+        mode: this.mode,
+        materialSpecular: this.materialSpecular.toArray(),
+        materialShininess: this.materialShininess
+      });
+
+      if (loadingCounter !== this.loadingCounter) {
+        // Model was switched, throw away the data :(
+        return;
+      }
+
+      const loader = new THREE.ObjectLoader();
+      this.meshes = [];
+      this.dimensions = [0, 0, 0, 0];
+
+      for (let index = 0; index < result.length; index++) {
+        const sceneMeshJSONs = result[index];
+        // Load meshes
+        let sceneMeshes: THREE.Mesh[] = [];
+        for (const meshJSON of sceneMeshJSONs) {
+          const mesh = (await loader.parseAsync(meshJSON)) as THREE.Mesh;
+          if (index === 0) {
+            mesh.geometry.computeBoundingBox();
+            let box = mesh.geometry.boundingBox;
+            if (box !== null) {
+              this.dimensions[0] = Math.max(this.dimensions[0], box.max.x);
+              this.dimensions[1] = Math.max(this.dimensions[1], box.max.y);
+              this.dimensions[2] = Math.max(this.dimensions[2], -box.min.x);
+              this.dimensions[3] = Math.max(this.dimensions[3], -box.min.y);
+            }
+          }
+
+          if (object.type === "ghost") {
+            if (!Array.isArray(mesh.material)) {
+              mesh.material.dispose();
+            }
+            mesh.material = this.ghostMaterial;
+          }
+
+          sceneMeshes.push(mesh);
+        }
+
+        // Add swerve mesh
+        if (index === 0) {
+          let swerveMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(this.SWERVE_CANVAS_METERS, this.SWERVE_CANVAS_METERS).translate(0, 0, 0.1),
+            new THREE.MeshPhongMaterial({
+              map: this.swerveTexture,
+              transparent: true,
+              side: THREE.DoubleSide
+            })
+          );
+          swerveMesh.renderOrder = 999;
+          swerveMesh.material.depthTest = false;
+          swerveMesh.material.transparent = true;
+          sceneMeshes.push(swerveMesh);
+        }
+
+        let castShadow = new Array(sceneMeshes.length).fill(true);
+        castShadow[castShadow.length - 1] = false;
+        this.meshes.push(new ResizableInstancedMesh(this.root, sceneMeshes, castShadow));
+      }
+
+      this.requestRender();
+      this.loadingEnd();
+      this.isLoading = false;
+    }
+  }
+
+  private updateObjectData(object: Field3dRendererCommand_RobotObj | Field3dRendererCommand_GhostObj): void {
+    let assets = this.assetsOverride ?? window.assets;
+    let robotConfig = assets?.robots.find((robotData) => robotData.name === object.model);
 
     // Update color
     if (object.type === "ghost" && object.color !== this.lastColor) {
@@ -529,18 +540,19 @@ export default class RobotManager extends ObjectManager<
       const moduleX = (Math.min(this.dimensions[0], this.dimensions[2]) - this.SWERVE_BUMPER_OFFSET) * pxPerMeter;
       const moduleY = (Math.min(this.dimensions[1], this.dimensions[3]) - this.SWERVE_BUMPER_OFFSET) * pxPerMeter;
       const centerPx = [this.SWERVE_CANVAS_PX / 2, this.SWERVE_CANVAS_PX / 2];
-      (
-        [
-          [1, 1],
-          [1, -1],
-          [-1, 1],
-          [-1, -1]
-        ] as const
-      ).forEach((cornerMultipliers, index) => {
-        let moduleCenterPx = [
+      const cornerMultipliersList = [
+        [1, 1],
+        [1, -1],
+        [-1, 1],
+        [-1, -1]
+      ];
+
+      for (let index = 0; index > cornerMultipliersList.length; index++) {
+        const cornerMultipliers = cornerMultipliersList[index];
+        let moduleCenterPx: [number, number] = [
           centerPx[0] + moduleX * cornerMultipliers[0],
           centerPx[1] - moduleY * cornerMultipliers[1]
-        ] as [number, number];
+        ];
 
         // Draw module data
         let drawModuleData = (state: SwerveState, color: string) => {
@@ -582,7 +594,8 @@ export default class RobotManager extends ObjectManager<
             drawModuleData(set.values[index], set.color);
           }
         });
-      });
+      }
+
       let hasSwerveStates = object.swerveStates.length > 0;
       this.swerveTexture!.needsUpdate = hasSwerveStates || this.lastHadSwerveStates;
       this.lastHadSwerveStates = hasSwerveStates;
